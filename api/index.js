@@ -6,7 +6,7 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const body = new URLSearchParams({ url: target, hd: "1" });
+    const body = new URLSearchParams({ url: target });
     const response = await fetch("https://www.tikwm.com/api/", {
       method: "POST",
       headers: {
