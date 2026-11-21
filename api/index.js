@@ -37,7 +37,7 @@ module.exports = async (req, res) => {
     return res.status(400).json({ code: -1, msg: "Thieu tham so ?url= hoac ?user=" });
   }
 
-  // 1. Lấy hồ sơ trang cá nhân TikTok (?user=username)
+  // 1. Hồ sơ TikTok — chạy song song 3 luồng, luồng nào xong trước trả ngay
   if (user) {
     const cleanUser = String(user).replace(/^@/, "").trim();
     const attempts = [
@@ -45,12 +45,8 @@ module.exports = async (req, res) => {
         url: `https://www.tiktok.com/@${encodeURIComponent(cleanUser)}`,
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-          "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-          "Sec-Fetch-Dest": "document",
-          "Sec-Fetch-Mode": "navigate",
-          "Sec-Fetch-Site": "none",
-          "Upgrade-Insecure-Requests": "1",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
         },
       },
       {
@@ -71,21 +67,29 @@ module.exports = async (req, res) => {
       },
     ];
 
-    for (const a of attempts) {
-      try {
-        const r = await fetch(a.url, { headers: a.headers, redirect: "follow" });
-        const html = await r.text();
-        const data = parseTikTokProfile(html);
-        if (data) {
-          return res.status(200).json({ code: 0, msg: "success", data });
-        }
-      } catch (_) {}
+    try {
+      const data = await Promise.any(
+        attempts.map(async (a) => {
+          const ac = new AbortController();
+          const timer = setTimeout(() => ac.abort(), 5000);
+          try {
+            const r = await fetch(a.url, { headers: a.headers, redirect: "follow", signal: ac.signal });
+            const html = await r.text();
+            const parsed = parseTikTokProfile(html);
+            if (!parsed) throw new Error("no data");
+            return parsed;
+          } finally {
+            clearTimeout(timer);
+          }
+        })
+      );
+      return res.status(200).json({ code: 0, msg: "success", data });
+    } catch (_) {
+      return res.status(200).json({ code: -1, msg: "TikTok dang bat captcha voi IP Vercel" });
     }
-
-    return res.status(200).json({ code: -1, msg: "TikTok dang bat captcha voi IP Vercel, thu lai sau vai giay" });
   }
 
-  // 2. Lấy video / ảnh slide TikTok (?url=...)
+  // 2. Video / ảnh slide TikTok
   try {
     const body = new URLSearchParams({ url: target });
     const response = await fetch("https://www.tikwm.com/api/", {
