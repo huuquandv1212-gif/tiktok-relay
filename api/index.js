@@ -26,7 +26,7 @@ function parseTikTokProfile(html) {
   return null;
 }
 
-async function fetchWithTimeout(url, options = {}, ms = 4500) {
+async function fetchWithTimeout(url, options = {}, ms = 8500) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), ms);
   try {
@@ -46,79 +46,131 @@ async function fromTikwm(target) {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     },
     body,
-  }, 4500);
+  }, 8500);
   if (!r.ok) throw new Error(`tikwm HTTP ${r.status}`);
   const j = await r.json();
   if (!j || j.code !== 0 || !j.data) throw new Error("tikwm empty");
   return j;
 }
 
-// Nguồn 2: TiklyDown (chuẩn hóa về đúng khung JSON của TikWM)
+// Nguồn 2: LoveTik (rất ổn định khi TikWM sập)
+async function fromLoveTik(target) {
+  const body = new URLSearchParams({ query: target });
+  const r = await fetchWithTimeout("https://lovetik.com/api/ajax/search", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "Origin": "https://lovetik.com",
+      "Referer": "https://lovetik.com/",
+    },
+    body,
+  }, 8000);
+  if (!r.ok) throw new Error(`lovetik HTTP ${r.status}`);
+  const d = await r.json();
+  if (!d || d.status !== "ok") throw new Error("lovetik fail");
+
+  const links = Array.isArray(d.links) ? d.links : [];
+  const mp4Links = links.filter((x) => x && x.a && !/mp3/i.test(String(x.t || x.ft || "")));
+  const noWm = mp4Links.find((x) => /no\s*watermark|hd|mp4/i.test(String(x.t || ""))) || mp4Links[0];
+  const play = noWm?.a || "";
+  const images = Array.isArray(d.images)
+    ? d.images.map((x) => (typeof x === "string" ? x : x.url || x.a)).filter(Boolean)
+    : [];
+
+  if (!play && !images.length) throw new Error("lovetik empty");
+
+  return {
+    code: 0,
+    msg: "success (lovetik)",
+    data: {
+      title: d.desc || "",
+      duration: 0,
+      play,
+      wmplay: play,
+      hdplay: play,
+      images: images.length ? images : undefined,
+      play_count: null,
+      digg_count: null,
+      comment_count: null,
+      share_count: null,
+      collect_count: null,
+      author: {
+        nickname: d.author_name || d.author || "Không rõ",
+        unique_id: String(d.author || "").replace(/^@/, ""),
+      },
+    },
+  };
+}
+
+// Nguồn 3: TiklyDown v3
 async function fromTiklyDown(target) {
   const r = await fetchWithTimeout(
-    `https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(target)}`,
+    `https://api.tiklydown.eu.org/api/download/v3?url=${encodeURIComponent(target)}`,
     { headers: { "User-Agent": "Mozilla/5.0" } },
-    4500
+    8000
   );
   if (!r.ok) throw new Error(`tiklydown HTTP ${r.status}`);
-  const d = await r.json();
-  const play = d?.video?.noWatermark || d?.video?.watermark;
-  const images = Array.isArray(d?.images) ? d.images.map((x) => (typeof x === "string" ? x : x.url)).filter(Boolean) : [];
-  if (!play && !images.length) throw new Error("tiklydown empty");
+  const j = await r.json();
+  const d = j?.result || j;
+  const play = d?.video?.noWatermark || d?.video?.watermark || d?.video;
+  const images = Array.isArray(d?.images)
+    ? d.images.map((x) => (typeof x === "string" ? x : x.url)).filter(Boolean)
+    : [];
+  if ((!play || typeof play !== "string") && !images.length) throw new Error("tiklydown empty");
 
   return {
     code: 0,
     msg: "success (tiklydown)",
     data: {
-      title: d.title || "",
-      duration: d?.video?.duration || 0,
-      play: play || "",
-      wmplay: d?.video?.watermark || play || "",
-      hdplay: d?.video?.noWatermark || play || "",
+      title: d?.desc || d?.title || "",
+      duration: 0,
+      play: typeof play === "string" ? play : "",
+      wmplay: typeof play === "string" ? play : "",
+      hdplay: typeof play === "string" ? play : "",
       images: images.length ? images : undefined,
-      play_count: d?.stats?.playCount ?? null,
-      digg_count: d?.stats?.likeCount ?? null,
-      comment_count: d?.stats?.commentCount ?? null,
-      share_count: d?.stats?.shareCount ?? null,
-      collect_count: d?.stats?.saveCount ?? null,
+      play_count: d?.statistics?.playCount ?? null,
+      digg_count: d?.statistics?.likeCount ?? null,
+      comment_count: d?.statistics?.commentCount ?? null,
+      share_count: d?.statistics?.shareCount ?? null,
+      collect_count: null,
       author: {
-        nickname: d?.author?.name || "Không rõ",
+        nickname: d?.author?.nickname || d?.author?.name || "Không rõ",
         unique_id: d?.author?.unique_id || "",
       },
     },
   };
 }
 
-// Nguồn 3: Gọi thẳng API TikTok từ cụm Singapore (không phụ thuộc bên thứ 3)
+// Nguồn 4: Gọi thẳng API TikTok từ Singapore
 async function fromTikTokDirect(target) {
   let finalUrl = target;
   if (!/\/(video|photo)\/\d+/.test(finalUrl)) {
     const r = await fetchWithTimeout(target, {
       redirect: "follow",
       headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)" },
-    }, 3500);
+    }, 4500);
     finalUrl = r.url || target;
   }
   const m = finalUrl.match(/\/(?:video|photo)\/(\d+)/);
-  if (!m) throw new Error("no aweme_id");
+  if (!m) throw new Error("direct no id");
   const id = m[1];
 
   const apiRes = await fetchWithTimeout(
-    `https://api22-normal-c-alisg.tiktokv.com/aweme/v1/feed/?aweme_id=${id}`,
+    `https://api16-normal-c-useast1a.tiktokv.com/aweme/v1/feed/?aweme_id=${id}`,
     { headers: { "User-Agent": "com.zhiliaoapp.musically/2023501030 (Linux; U; Android 13)" } },
-    4000
+    5000
   );
-  if (!apiRes.ok) throw new Error(`tiktok direct HTTP ${apiRes.status}`);
+  if (!apiRes.ok) throw new Error(`direct HTTP ${apiRes.status}`);
   const j = await apiRes.json();
   const item = (j?.aweme_list || []).find((x) => String(x.aweme_id) === id) || j?.aweme_list?.[0];
-  if (!item) throw new Error("tiktok direct empty");
+  if (!item) throw new Error("direct empty");
 
   const images = (item?.image_post_info?.images || [])
     .map((img) => img?.display_image?.url_list?.[0])
     .filter(Boolean);
   const play = item?.video?.play_addr?.url_list?.[0] || "";
-  const wmplay = item?.video?.download_addr?.url_list?.[0] || play;
-  if (!play && !images.length) throw new Error("no media");
+  if (!play && !images.length) throw new Error("direct no media");
 
   return {
     code: 0,
@@ -127,7 +179,7 @@ async function fromTikTokDirect(target) {
       title: item.desc || "",
       duration: Math.round((item?.video?.duration || 0) / 1000),
       play,
-      wmplay,
+      wmplay: item?.video?.download_addr?.url_list?.[0] || play,
       hdplay: play,
       images: images.length ? images : undefined,
       play_count: item?.statistics?.play_count ?? null,
@@ -154,7 +206,7 @@ module.exports = async (req, res) => {
     return res.status(400).json({ code: -1, msg: "Thieu tham so ?url= hoac ?user=" });
   }
 
-  // 1. Hồ sơ TikTok — chạy song song 3 luồng, luồng nào xong trước trả ngay
+  // 1. Hồ sơ TikTok
   if (user) {
     const cleanUser = String(user).replace(/^@/, "").trim();
     const attempts = [
@@ -200,19 +252,19 @@ module.exports = async (req, res) => {
     }
   }
 
-  // 2. Video / ảnh slide TikTok (TikWM -> dự phòng song song TiklyDown + TikTok Direct)
+  // 2. Video / ảnh slide TikTok — đua tốc độ cả 4 nguồn cùng lúc
   try {
-    const data = await fromTikwm(target);
+    const data = await Promise.any([
+      fromTikwm(target),
+      fromLoveTik(target),
+      fromTiklyDown(target),
+      fromTikTokDirect(target),
+    ]);
     return res.status(200).json(data);
-  } catch (e1) {
-    try {
-      const fallback = await Promise.any([
-        fromTiklyDown(target),
-        fromTikTokDirect(target),
-      ]);
-      return res.status(200).json(fallback);
-    } catch (e2) {
-      return res.status(502).json({ code: -1, msg: `Tat ca nguon deu loi (${e1.message})` });
-    }
+  } catch (aggErr) {
+    const details = Array.isArray(aggErr?.errors)
+      ? aggErr.errors.map((e) => e?.message || String(e)).join(" | ")
+      : String(aggErr?.message || aggErr);
+    return res.status(502).json({ code: -1, msg: `Tat ca nguon deu loi: ${details}` });
   }
 };
